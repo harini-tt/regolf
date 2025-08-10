@@ -1,0 +1,35 @@
+{
+  "regex_golf_dataset_puzzle.json": {
+    "entries": 4,
+    "total_original_yes": 40,
+    "total_original_no": 43,
+    "total_filtered_yes": 31,
+    "total_filtered_no": 43,
+    "total_removed_yes": 9,
+    "total_removed_no": 0,
+    "yes_accuracy": 0.775,
+    "no_accuracy": 1.0
+  },
+  "regex_golf_dataset.json": {
+    "entries": 5,
+    "total_original_yes": 241,
+    "total_original_no": 244,
+    "total_filtered_yes": 230,
+    "total_filtered_no": 240,
+    "total_removed_yes": 11,
+    "total_removed_no": 4,
+    "yes_accuracy": 0.9543568464730291,
+    "no_accuracy": 0.9836065573770492
+  },
+  "intermediate_results_0.json": {
+    "entries": 1,
+    "total_original_yes": 50,
+    "total_original_no": 48,
+    "total_filtered_yes": 49,
+    "total_filtered_no": 45,
+    "total_removed_yes": 1,
+    "total_removed_no": 3,
+    "yes_accuracy": 0.98,
+    "no_accuracy": 0.9375
+  }
+}
