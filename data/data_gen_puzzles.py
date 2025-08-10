@@ -295,7 +295,7 @@ def main():
     # Configuration
     config = {
         "model": "gpt-4o",
-        "max_patterns": 10,
+        "max_patterns": 40,
         "output_file": "./generated_data/regex_golf_dataset_puzzle.json"
     }
     
