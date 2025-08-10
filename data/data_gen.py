@@ -2,96 +2,66 @@
 """
 GPT API Data Generator for Regex Golf RL/LoRA Training
 
-This script uses GPT API to generate high-quality training examples for a 
-regex golf approximation solver using RL/LoRA fine-tuning. It loads regex 
-patterns from the innovatorved/regex_dataset on Hugging Face.
+This script processes each row from innovatorved/regex_dataset individually,
+makes separate GPT queries, and outputs training data in the format:
+{expr: str, yes: [list], no: [list]}
 """
 
 import os
 import json
 import time
-import random
-from typing import List, Dict, Any, Tuple, Optional
-from dataclasses import dataclass
+from typing import List, Dict, Any, Optional
 import logging
 from pathlib import Path
 
-import pandas as pd
-import numpy as np
-from datasets import load_dataset, Dataset
+from datasets import load_dataset
 from openai import OpenAI
 from tqdm import tqdm
 import re
-from dotenv import load_dotenv
-import jsonlines
-
-# Load environment variables
-load_dotenv()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-@dataclass
-class RegexGolfExample:
-    """Represents a regex golf training example"""
-    regex_pattern: str
-    target_strings: List[str]
-    non_target_strings: List[str]
-    difficulty_level: str
-    explanation: str
-    optimization_hint: str
-    character_budget: int
-    expected_solution: str
-
 class RegexGolfDataGenerator:
-    """Generates high-quality regex golf training data using GPT API"""
+    """Generates regex golf training data by processing each dataset row individually"""
     
     def __init__(self, 
                  api_key: Optional[str] = None,
                  model: str = "gpt-4-turbo-preview",
-                 max_examples_per_regex: int = 3,
-                 output_dir: str = "./generated_data"):
+                 output_file: str = "./generated_data/regex_golf_dataset.json"):
         """
         Initialize the data generator
         
         Args:
             api_key: OpenAI API key (if None, reads from environment)
             model: GPT model to use
-            max_examples_per_regex: Maximum training examples per regex pattern
-            output_dir: Directory to save generated data
+            output_file: Path to save the final JSON dataset
         """
         self.client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
         self.model = model
-        self.max_examples_per_regex = max_examples_per_regex
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_file = Path(output_file)
+        self.output_file.parent.mkdir(exist_ok=True)
         
         # Rate limiting
         self.last_request_time = 0
         self.min_request_interval = 1.0  # seconds between requests
         
     def load_regex_dataset(self) -> List[Dict[str, Any]]:
-        """Load regex patterns from innovatorved/regex_dataset"""
-        regex_patterns = []
-        
+        """Load all rows from innovatorved/regex_dataset"""
         logger.info("Loading innovatorved/regex_dataset from Hugging Face...")
         dataset = load_dataset("innovatorved/regex_dataset", split="train")
         
+        regex_data = []
         for item in dataset:
             if "regex" in item and item["regex"]:
-                # Get description if available
-                description = item.get("description", "No description provided")
-                
-                regex_patterns.append({
-                    "pattern": item["regex"],
-                    "description": description,
-                    "source": "innovatorved/regex_dataset",
-                    "metadata": {"description": description}
+                regex_data.append({
+                    "regex": item["regex"],
+                    "description": item.get("description", "No description provided")
                 })
                 
-        logger.info(f"Successfully loaded {len(regex_patterns)} regex patterns")
-        return regex_patterns
+        logger.info(f"Loaded {len(regex_data)} regex patterns")
+        return regex_data
         
     def _rate_limit(self):
         """Implement rate limiting for API calls"""
@@ -100,299 +70,213 @@ class RegexGolfDataGenerator:
             time.sleep(self.min_request_interval - elapsed)
         self.last_request_time = time.time()
         
-    def generate_regex_golf_examples(self, regex_pattern: str, description: str) -> List[RegexGolfExample]:
-        """Generate multiple regex golf training examples for a given pattern"""
+    def generate_examples_for_regex(self, regex_pattern: str, description: str) -> Optional[Dict[str, Any]]:
+        """Generate training examples for a single regex pattern"""
         self._rate_limit()
         
-        prompt = self._create_regex_golf_prompt(regex_pattern, description)
+        prompt = self._create_prompt(regex_pattern, description)
         
         try:
+            # GPT-5 (o1) models use max_completion_tokens, others use max_tokens
+            token_param = {}
+            if "gpt-5" in self.model or "o1" in self.model:
+                token_param["max_completion_tokens"] = 2000
+            else:
+                token_param["max_tokens"] = 2000
+            
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": self._get_system_prompt()},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.8,
-                max_tokens=4000
+                temperature=0.7,
+                **token_param
             )
             
             content = response.choices[0].message.content
-            examples = self._parse_gpt_response(content, regex_pattern)
-            return examples
+            result = self._extract_json_from_response(content, regex_pattern)
+            return result
             
         except Exception as e:
             logger.error(f"Error generating examples for pattern {regex_pattern}: {e}")
-            return []
+            return None
             
     def _get_system_prompt(self) -> str:
         """Get the system prompt for GPT"""
-        return """You are an expert in regex golf and reinforcement learning for code optimization. 
-Your task is to generate high-quality training examples for an RL/LoRA model that learns to 
-create efficient regex patterns. 
+        return """You are an expert in regular expressions and pattern matching. 
+Your task is to generate training examples for regex golf - finding strings that match 
+and don't match a given regex pattern.
 
-Regex golf is about finding the shortest possible regex that matches specific target strings 
-while avoiding non-target strings. Focus on:
+For each regex pattern, provide:
+1. A list of strings that SHOULD match the pattern (yes examples)
+2. A list of strings that should NOT match the pattern (no examples)
 
-1. **Diversity**: Create varied difficulty levels and pattern types
-2. **Educational Value**: Include examples that teach optimization strategies
-3. **Realistic Constraints**: Use practical character budgets (10-50 characters)
-4. **Clear Objectives**: Provide clear target/non-target distinctions
-5. **Strategic Hints**: Include optimization strategies for RL learning
+Focus on:
+- Creating diverse, realistic examples
+- Including edge cases and boundary conditions
+- Making examples educational and challenging
+- Ensuring examples are correct and well-tested
 
-Format your response as valid JSON with multiple training examples."""
+Always respond with valid JSON in the exact format requested."""
 
-    def _create_regex_golf_prompt(self, regex_pattern: str, description: str) -> str:
-        """Create a detailed prompt for generating regex golf examples"""
+    def _create_prompt(self, regex_pattern: str, description: str) -> str:
+        """Create a prompt for generating examples for a specific regex"""
         
         prompt = f"""
 Given this regex pattern: `{regex_pattern}`
 Description: {description}
 
-Generate {self.max_examples_per_regex} diverse regex golf training examples based on this pattern. 
-Each example should be a learning scenario where an RL agent needs to discover an efficient regex.
+Generate training examples for regex golf. Create 6-10 strings that SHOULD match this pattern 
+and 6-10 strings that should NOT match this pattern.
 
-For each example, provide:
+Make the examples:
+- Realistic and diverse
+- Include edge cases
+- Cover different scenarios the regex might encounter
+- Be educational for learning regex patterns
 
-1. **target_strings**: 5-8 strings that should match the pattern
-2. **non_target_strings**: 5-8 strings that should NOT match 
-3. **difficulty_level**: "beginner", "intermediate", "advanced", or "expert"
-4. **explanation**: Why this is a good learning example (2-3 sentences)
-5. **optimization_hint**: Specific strategy for making the regex shorter/more efficient
-6. **character_budget**: Realistic limit (10-50 chars) for the solution
-7. **expected_solution**: Your best regex solution within the budget
+Return ONLY a valid JSON object in this exact format:
+{{
+  "expr": "{regex_pattern}",
+  "yes": ["string1", "string2", "string3", ...],
+  "no": ["string1", "string2", "string3", ...]
+}}
 
-Make the examples progressively more challenging:
-- **Beginner**: Simple patterns, obvious solutions
-- **Intermediate**: Require some regex knowledge, multiple valid approaches  
-- **Advanced**: Need optimization tricks, character classes, quantifiers
-- **Expert**: Require deep regex mastery, creative shortcuts
-
-Vary the scenarios:
-- Different string lengths and patterns
-- Mix of literal matches and pattern-based matches  
-- Include edge cases and boundary conditions
-- Create examples that teach specific regex concepts
-
-Return ONLY a valid JSON array with this structure:
-```json
-[
-  {{
-    "target_strings": ["string1", "string2", ...],
-    "non_target_strings": ["string1", "string2", ...], 
-    "difficulty_level": "beginner|intermediate|advanced|expert",
-    "explanation": "Educational value explanation",
-    "optimization_hint": "Specific strategy for optimization",
-    "character_budget": 25,
-    "expected_solution": "optimized regex pattern"
-  }},
-  ...
-]
-```
-
-Focus on creating examples that will help an RL agent learn:
-- When to use character classes vs literals
-- How to leverage quantifiers effectively  
-- Boundary conditions and anchoring strategies
-- Trade-offs between specificity and generality
-- Creative use of lookarounds and groups
+Make sure the JSON is valid and parseable. Do not include any other text or explanation.
 """
         return prompt
         
-    def _parse_gpt_response(self, content: str, original_pattern: str) -> List[RegexGolfExample]:
-        """Parse GPT response into RegexGolfExample objects"""
-        examples = []
-        
+    def _extract_json_from_response(self, content: str, regex_pattern: str) -> Optional[Dict[str, Any]]:
+        """Extract and validate JSON from GPT response"""
         try:
-            # Extract JSON from response
-            json_start = content.find('[')
-            json_end = content.rfind(']') + 1
+            # Find JSON object in the response
+            json_start = content.find('{')
+            json_end = content.rfind('}') + 1
             
             if json_start == -1 or json_end == 0:
-                logger.error("No valid JSON found in GPT response")
-                return examples
+                logger.error(f"No JSON found in response for pattern: {regex_pattern}")
+                return None
                 
             json_str = content[json_start:json_end]
             data = json.loads(json_str)
             
-            for item in data:
-                try:
-                    example = RegexGolfExample(
-                        regex_pattern=original_pattern,
-                        target_strings=item.get("target_strings", []),
-                        non_target_strings=item.get("non_target_strings", []),
-                        difficulty_level=item.get("difficulty_level", "intermediate"),
-                        explanation=item.get("explanation", ""),
-                        optimization_hint=item.get("optimization_hint", ""),
-                        character_budget=item.get("character_budget", 30),
-                        expected_solution=item.get("expected_solution", "")
-                    )
-                    
-                    # Validate the example
-                    if self._validate_example(example):
-                        examples.append(example)
-                    else:
-                        logger.warning(f"Invalid example skipped for pattern: {original_pattern}")
-                        
-                except KeyError as e:
-                    logger.error(f"Missing required field in example: {e}")
-                    
+            # Validate the structure
+            if not all(key in data for key in ["expr", "yes", "no"]):
+                logger.error(f"Missing required keys in JSON for pattern: {regex_pattern}")
+                return None
+                
+            if not isinstance(data["yes"], list) or not isinstance(data["no"], list):
+                logger.error(f"'yes' and 'no' must be lists for pattern: {regex_pattern}")
+                return None
+                
+            # Validate that the regex actually works
+            if self._validate_examples(data["expr"], data["yes"], data["no"]):
+                return data
+            else:
+                logger.warning(f"Validation failed for pattern: {regex_pattern}")
+                return None
+                
         except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing error: {e}")
-            logger.debug(f"Response content: {content}")
+            logger.error(f"JSON parsing error for pattern {regex_pattern}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error processing pattern {regex_pattern}: {e}")
+            return None
             
-        return examples
-        
-    def _validate_example(self, example: RegexGolfExample) -> bool:
-        """Validate a regex golf example"""
-        # Check required fields
-        if not all([
-            example.target_strings,
-            example.non_target_strings, 
-            example.difficulty_level,
-            example.expected_solution
-        ]):
-            return False
-            
-        # Check difficulty level
-        valid_levels = ["beginner", "intermediate", "advanced", "expert"]
-        if example.difficulty_level not in valid_levels:
-            return False
-            
-        # Check character budget is reasonable
-        if not (5 <= example.character_budget <= 100):
-            return False
-            
-        # Test if expected solution actually works
+    def _validate_examples(self, regex_pattern: str, yes_examples: List[str], no_examples: List[str]) -> bool:
+        """Validate that the examples are correct for the regex pattern"""
         try:
-            pattern = re.compile(example.expected_solution)
+            pattern = re.compile(regex_pattern)
             
-            # Check that it matches target strings
-            for target in example.target_strings[:3]:  # Test first 3
-                if not pattern.search(target):
-                    logger.warning(f"Expected solution doesn't match target: {target}")
+            # Check that yes examples match
+            for example in yes_examples[:5]:  # Check first 5
+                if not pattern.search(example):
+                    logger.warning(f"Yes example '{example}' doesn't match pattern '{regex_pattern}'")
                     return False
                     
-            # Check that it doesn't match non-target strings (at least some)
+            # Check that at least some no examples don't match
             non_matches = 0
-            for non_target in example.non_target_strings[:3]:  # Test first 3
-                if not pattern.search(non_target):
+            for example in no_examples[:5]:  # Check first 5
+                if not pattern.search(example):
                     non_matches += 1
                     
             if non_matches == 0:
-                logger.warning("Expected solution matches all non-target strings")
+                logger.warning(f"All no examples match pattern '{regex_pattern}'")
                 return False
                 
-        except re.error:
-            logger.warning(f"Invalid regex in expected solution: {example.expected_solution}")
+            return True
+            
+        except re.error as e:
+            logger.warning(f"Invalid regex pattern '{regex_pattern}': {e}")
             return False
             
-        return True
+    def process_dataset(self, max_patterns: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Process the entire dataset, making individual GPT queries for each regex"""
+        logger.info("Starting dataset processing...")
         
-    def save_examples(self, examples: List[RegexGolfExample], filename: str):
-        """Save examples in multiple formats for RL training"""
-        base_path = self.output_dir / filename
-        
-        # Save as JSON Lines (for streaming)
-        jsonl_path = base_path.with_suffix('.jsonl')
-        with jsonlines.open(jsonl_path, 'w') as writer:
-            for example in examples:
-                writer.write({
-                    'regex_pattern': example.regex_pattern,
-                    'target_strings': example.target_strings,
-                    'non_target_strings': example.non_target_strings,
-                    'difficulty_level': example.difficulty_level,
-                    'explanation': example.explanation,
-                    'optimization_hint': example.optimization_hint,
-                    'character_budget': example.character_budget,
-                    'expected_solution': example.expected_solution
-                })
-        
-        # Save as regular JSON
-        json_path = base_path.with_suffix('.json')
-        with open(json_path, 'w') as f:
-            json.dump([{
-                'regex_pattern': ex.regex_pattern,
-                'target_strings': ex.target_strings,
-                'non_target_strings': ex.non_target_strings,
-                'difficulty_level': ex.difficulty_level,
-                'explanation': ex.explanation,
-                'optimization_hint': ex.optimization_hint,
-                'character_budget': ex.character_budget,
-                'expected_solution': ex.expected_solution
-            } for ex in examples], f, indent=2)
-            
-        logger.info(f"Saved {len(examples)} examples to {base_path}.{{json,jsonl}}")
-        
-    def generate_dataset(self, max_patterns: Optional[int] = None) -> List[RegexGolfExample]:
-        """Generate the complete training dataset"""
-        logger.info("Starting regex golf dataset generation...")
-        
-        # Load regex patterns from innovatorved/regex_dataset
-        regex_patterns = self.load_regex_dataset()
+        # Load all regex patterns
+        regex_data = self.load_regex_dataset()
         
         if max_patterns:
-            regex_patterns = regex_patterns[:max_patterns]
+            regex_data = regex_data[:max_patterns]
+            logger.info(f"Processing first {max_patterns} patterns")
             
-        all_examples = []
+        results = []
         
-        for i, pattern_data in enumerate(tqdm(regex_patterns, desc="Generating examples")):
-            pattern = pattern_data["pattern"]
-            description = pattern_data["description"]
+        for i, item in enumerate(tqdm(regex_data, desc="Processing patterns")):
+            regex = item["regex"]
+            description = item["description"]
             
-            logger.info(f"Processing pattern {i+1}/{len(regex_patterns)}: {pattern}")
+            logger.info(f"Processing {i+1}/{len(regex_data)}: {regex}")
             
-            # Generate examples for this pattern
-            examples = self.generate_regex_golf_examples(pattern, description)
-            all_examples.extend(examples)
+            # Generate examples for this specific regex
+            result = self.generate_examples_for_regex(regex, description)
             
-            # Save intermediate results every 10 patterns
-            if i % 10 == 0 and all_examples:
-                self.save_examples(all_examples, f"regex_golf_partial_{i}")
+            if result:
+                results.append(result)
+                logger.info(f"✅ Generated examples for: {regex}")
+            else:
+                logger.warning(f"❌ Failed to generate examples for: {regex}")
                 
-        # Save final dataset
-        if all_examples:
-            self.save_examples(all_examples, "regex_golf_complete")
+            # Save intermediate results every 50 patterns
+            if i % 50 == 0 and results:
+                self._save_intermediate_results(results, i)
+                
+        logger.info(f"Successfully processed {len(results)}/{len(regex_data)} patterns")
+        return results
+        
+    def _save_intermediate_results(self, results: List[Dict[str, Any]], index: int):
+        """Save intermediate results"""
+        intermediate_file = self.output_file.parent / f"intermediate_results_{index}.json"
+        with open(intermediate_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        logger.info(f"Saved intermediate results to {intermediate_file}")
+        
+    def save_final_dataset(self, results: List[Dict[str, Any]]):
+        """Save the final dataset"""
+        with open(self.output_file, 'w') as f:
+            json.dump(results, f, indent=2)
             
-        logger.info(f"Generated {len(all_examples)} total training examples")
-        return all_examples
+        logger.info(f"Saved final dataset with {len(results)} examples to {self.output_file}")
         
-    def create_training_splits(self, examples: List[RegexGolfExample], 
-                             train_ratio: float = 0.7,
-                             val_ratio: float = 0.15,
-                             test_ratio: float = 0.15):
-        """Create train/validation/test splits for RL training"""
-        assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6
-        
-        # Shuffle examples
-        shuffled = examples.copy()
-        random.shuffle(shuffled)
-        
-        n_total = len(shuffled)
-        n_train = int(n_total * train_ratio)
-        n_val = int(n_total * val_ratio)
-        
-        train_examples = shuffled[:n_train]
-        val_examples = shuffled[n_train:n_train + n_val]
-        test_examples = shuffled[n_train + n_val:]
-        
-        # Save splits
-        self.save_examples(train_examples, "train_split")
-        self.save_examples(val_examples, "val_split") 
-        self.save_examples(test_examples, "test_split")
-        
-        logger.info(f"Created splits: {len(train_examples)} train, {len(val_examples)} val, {len(test_examples)} test")
-        
-        return train_examples, val_examples, test_examples
+        # Print some statistics
+        total_yes = sum(len(item["yes"]) for item in results)
+        total_no = sum(len(item["no"]) for item in results)
+        logger.info(f"Dataset statistics:")
+        logger.info(f"  Total patterns: {len(results)}")
+        logger.info(f"  Total yes examples: {total_yes}")
+        logger.info(f"  Total no examples: {total_no}")
+        logger.info(f"  Average yes per pattern: {total_yes/len(results):.1f}")
+        logger.info(f"  Average no per pattern: {total_no/len(results):.1f}")
 
 def main():
     """Main function to run the data generation"""
     # Configuration
     config = {
-        "model": "gpt-4-turbo-preview",  # or "gpt-3.5-turbo" for faster/cheaper generation
-        "max_examples_per_regex": 3,     # Number of examples per regex pattern
-        "max_patterns": 50,              # Max regex patterns to process (None for all)
-        "output_dir": "./generated_data"
+        "model": "gpt-5-mini",  # or "gpt-3.5-turbo" for faster/cheaper
+        "max_patterns": 5,             # Max patterns to process (None for all 8.55k)
+        "output_file": "./generated_data/regex_golf_dataset.json"
     }
     
     # Check for API key
@@ -405,31 +289,18 @@ def main():
     # Initialize generator
     generator = RegexGolfDataGenerator(
         model=config["model"],
-        max_examples_per_regex=config["max_examples_per_regex"],
-        output_dir=config["output_dir"]
+        output_file=config["output_file"]
     )
     
-    # Generate dataset
-    examples = generator.generate_dataset(max_patterns=config["max_patterns"])
+    # Process the dataset
+    results = generator.process_dataset(max_patterns=config["max_patterns"])
     
-    # Create training splits
-    if examples:
-        generator.create_training_splits(examples)
-        
-        # Print statistics
-        difficulty_counts = {}
-        for ex in examples:
-            difficulty_counts[ex.difficulty_level] = difficulty_counts.get(ex.difficulty_level, 0) + 1
-            
-        logger.info("Dataset statistics:")
-        for difficulty, count in difficulty_counts.items():
-            logger.info(f"  {difficulty}: {count} examples")
-            
-        avg_budget = np.mean([ex.character_budget for ex in examples])
-        logger.info(f"  Average character budget: {avg_budget:.1f}")
-        
+    # Save final results
+    if results:
+        generator.save_final_dataset(results)
+        logger.info("🎉 Dataset generation completed successfully!")
     else:
-        logger.error("No examples generated! Check your OpenAI API key and quota.")
+        logger.error("❌ No examples generated! Check your OpenAI API key and quota.")
 
 if __name__ == "__main__":
     main()
