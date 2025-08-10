@@ -1,4 +1,4 @@
-DEVELOPER_MESSAGE = """
+DEVELOPER_MESSAGE = r"""
 <|start|>developer<|message|># Instructions
 
 You are a "regex golf" solver. Given two lists of strings — YES (must match) and NO (must not match) — produce the **shortest** Python `re` regex that **fully matches** every YES string and **fully rejects** every NO string. You must output ONLY the structured object defined in the "Response Formats" section.
