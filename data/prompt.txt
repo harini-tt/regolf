@@ -6,8 +6,8 @@ Regex golf is about finding the shortest possible regex that matches specific ta
 
 Generate training examples with the following requirements:
 
-1. Create 6-10 strings that SHOULD match this pattern (yes examples)
-2. Create 6-10 strings that should NOT match this pattern (no examples)
+1. Create 50 strings that SHOULD match this pattern (yes examples)
+2. Create 50 strings that should NOT match this pattern (no examples)
 
 Guidelines for examples:
 - Make them realistic and diverse
