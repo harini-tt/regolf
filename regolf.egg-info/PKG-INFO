@@ -4,4 +4,5 @@ Version: 0.1.0
 Summary: Regolf project
 Author: Michelle Wei
 Requires-Python: >=3.9
+Requires-Dist: aiofiles>=24.1.0
 Requires-Dist: modal>=1.1.1

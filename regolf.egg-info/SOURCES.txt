@@ -1,6 +1,8 @@
 README.md
 pyproject.toml
-data/data_gen.py
+data/data_gen_hf.py
+data/data_gen_hf_parallel.py
+data/data_gen_puzzles.py
 regolf.egg-info/PKG-INFO
 regolf.egg-info/SOURCES.txt
 regolf.egg-info/dependency_links.txt

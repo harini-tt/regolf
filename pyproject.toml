@@ -9,6 +9,7 @@ requires-python = ">=3.9"
 
 # Runtime dependencies. You can add packages with `uv add <package>` or manually list them here.
 dependencies = [
+    "aiofiles>=24.1.0",
     "modal>=1.1.1",
 ]
 
