@@ -1,6 +1,11 @@
 README.md
 pyproject.toml
 data/data_gen.py
+regex/__init__.py
+regex/model_output_parser.py
+regex/regex_ast_validation.py
+regex/regex_evaluator.py
+regex/reward_calculator.py
 regolf.egg-info/PKG-INFO
 regolf.egg-info/SOURCES.txt
 regolf.egg-info/dependency_links.txt

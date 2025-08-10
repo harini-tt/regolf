@@ -5,3 +5,8 @@ Summary: Regolf project
 Author: Michelle Wei
 Requires-Python: >=3.9
 Requires-Dist: modal>=1.1.1
+Requires-Dist: torch
+Requires-Dist: transformers
+Requires-Dist: wandb
+Requires-Dist: numpy
+Requires-Dist: datasets
