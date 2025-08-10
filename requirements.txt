@@ -1,0 +1,25 @@
+# Core dependencies
+torch>=2.0.0
+transformers>=4.35.0
+accelerate>=0.24.0
+datasets>=2.14.0
+wandb>=0.16.0
+modal>=0.56.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Type checking and linting
+mypy>=1.7.0
+ruff>=0.1.6
+
+# Utilities
+numpy>=1.24.0
+tqdm>=4.66.0
+jsonschema>=4.19.0
+pydantic>=2.5.0
+
+# Development dependencies
+ipython>=8.17.0
+jupyter>=1.0.0

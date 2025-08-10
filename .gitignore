@@ -13,6 +13,9 @@ build/
 htmlcov/
 .tox/
 .hypothesis/
+*.pyc
+*.pyo
+*.pyd
 
 # Virtual Environments
 .venv/
@@ -33,9 +36,10 @@ env/
 Thumbs.db
 
 # Project specific
-data/validated_data/
 *.log
 .modal/
+.python-version
+.ruff_cache/
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
