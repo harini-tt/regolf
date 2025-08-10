@@ -49,7 +49,7 @@ class ValidationStats:
 class DataValidator:
     """Validates and cleans regex golf datasets."""
     
-    def __init__(self, input_dir: str = "data/generated_data", output_dir: str = "data/validated_data"):
+    def __init__(self, input_dir: str = "../generated_data", output_dir: str = "../validated_data"):
         """
         Initialize validator.
         
