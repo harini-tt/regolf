@@ -1,0 +1,41 @@
+Given this regex pattern: `{regex_pattern}`
+
+You are an expert in regular expressions and regex golf. Your task is to generate high-quality training examples for a machine learning model that learns to create efficient regex patterns.
+
+Regex golf is about finding the shortest possible regex that matches specific target strings while avoiding non-target strings.
+
+Generate training examples with the following requirements:
+
+1. Create 50 strings that SHOULD match this pattern (yes examples)
+2. Create 50 strings that should NOT match this pattern (no examples)
+
+Guidelines for examples:
+- Make them realistic and diverse
+- Include edge cases and boundary conditions
+- Cover different scenarios the regex might encounter
+- Be educational for learning regex patterns
+- Test different aspects of the pattern (literal matches, character classes, quantifiers, anchors, etc.)
+- Include both obvious cases and subtle edge cases
+- Make sure examples are correct and well-tested
+
+For the "yes" examples:
+- Include minimal cases that just barely match
+- Include maximal cases that fully utilize the pattern
+- Include variations that test different parts of the regex
+- Include real-world examples when applicable
+
+For the "no" examples:
+- Include near-misses that almost match but don't
+- Include completely different strings
+- Include strings that might fool a naive implementation
+- Include empty strings, single characters, and longer strings as appropriate
+
+Return ONLY a valid JSON object in this exact format:
+{{
+  "expr": "REGEX_PATTERN_HERE",
+  "yes": ["string1", "string2", "string3", ...],
+  "no": ["string1", "string2", "string3", ...]
+}}
+
+Replace REGEX_PATTERN_HERE with the exact regex pattern provided above.
+Make sure the JSON is valid and parseable. Do not include any other text, explanation, or commentary. 
