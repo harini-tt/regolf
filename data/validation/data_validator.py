@@ -191,14 +191,14 @@ class DataValidator:
     
     def process_all_files(self) -> Dict[str, Dict[str, Any]]:
         """
-        Process all JSON files in the input directory.
+        Process all JSON files in the input directory (including subdirectories).
         
         Returns:
             Dictionary with statistics for each file
         """
-        # Find all JSON files
-        pattern = os.path.join(self.input_dir, "*.json")
-        json_files = glob.glob(pattern)
+        # Find all JSON files recursively
+        pattern = os.path.join(self.input_dir, "**", "*.json")
+        json_files = glob.glob(pattern, recursive=True)
         
         if not json_files:
             print(f"No JSON files found in {self.input_dir}")

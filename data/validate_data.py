@@ -1,20 +1,23 @@
 #!/usr/bin/env python
 """
-Convenience script to run data validation from project root.
+Convenience script to run data validation.
 """
 import sys
 import os
 
 # Add validation module to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'data', 'validation'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'validation'))
 
 from data_validator import DataValidator
 
 def main():
     """Run data validation with correct paths."""
+    # Get the data directory path
+    data_dir = os.path.dirname(os.path.abspath(__file__))
+    
     validator = DataValidator(
-        input_dir="data/generated_data",
-        output_dir="data/validated_data"
+        input_dir=os.path.join(data_dir, "generated_data"),
+        output_dir=os.path.join(data_dir, "validated_data")
     )
     
     print("Starting data validation...")
