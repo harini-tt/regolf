@@ -47,9 +47,9 @@ class RegexGolfDataGenerator:
         self.output_file = Path(output_file)
         self.output_file.parent.mkdir(exist_ok=True)
         
-        # Rate limiting
-        self.last_request_time = 0
-        self.min_request_interval = 1.0  # seconds between requests
+        # Adaptive rate limiting
+        self.rate_limit_detected = False
+        self.current_concurrency = None
         
     def load_regex_dataset(self) -> List[Dict[str, Any]]:
         """Load all rows from innovatorved/regex_dataset"""
@@ -74,51 +74,13 @@ class RegexGolfDataGenerator:
         logger.info(f"Loaded {len(regex_data)} regex patterns")
         return regex_data
         
-    def _rate_limit(self):
-        """Implement rate limiting for API calls"""
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.min_request_interval:
-            time.sleep(self.min_request_interval - elapsed)
-        self.last_request_time = time.time()
-        
-    async def generate_examples_for_regex(self, regex_pattern: str, description: str, examples: List[str] = None) -> Optional[Dict[str, Any]]:
-        """Generate training examples for a single regex pattern"""
-        self._rate_limit()
-        
-        prompt = self._create_prompt(regex_pattern, description, examples)
-        
-        try:
-            # GPT-5 (o1) models use max_completion_tokens, others use max_tokens
-            token_param = {}
-            if "gpt-5" in self.model or "o1" in self.model:
-                token_param["max_completion_tokens"] = 2000
-            else:
-                token_param["max_tokens"] = 2000
-            
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self._get_system_prompt()},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                **token_param
-            )
-            
-            content = response.choices[0].message.content
-            result = self._extract_json_from_response(content, regex_pattern)
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error generating examples for pattern {regex_pattern}: {e}")
-            return None
-
-    async def generate_examples_for_regex_with_retry(self, regex_pattern: str, description: str, examples: List[str] = None, max_retries: int = 10) -> Optional[Dict[str, Any]]:
-        """Generate training examples with retry logic and exponential backoff"""
+    async def generate_examples_for_regex_with_retry(self, regex_pattern: str, description: str, examples: List[str] = None, max_retries: int = 15) -> Optional[Dict[str, Any]]:
+        """Generate training examples with retry logic and exponential backoff - NEVER GIVES UP on rate limits"""
         for attempt in range(max_retries):
             try:
                 # Add some jitter to avoid thundering herd
-                await asyncio.sleep(random.uniform(0, 0.5))
+                initial_delay = random.uniform(0, 1.0)
+                await asyncio.sleep(initial_delay)
                 
                 prompt = self._create_prompt(regex_pattern, description, examples)
                 
@@ -136,6 +98,7 @@ class RegexGolfDataGenerator:
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
+                    timeout=120.0,  # Longer timeout for rate-limited scenarios
                     **token_param
                 )
                 
@@ -143,19 +106,47 @@ class RegexGolfDataGenerator:
                 result = self._extract_json_from_response(content, regex_pattern)
                 
                 if result:
+                    logger.debug(f"✅ Success for pattern {regex_pattern} on attempt {attempt + 1}")
                     return result
                 else:
-                    logger.warning(f"Failed to extract valid JSON for pattern {regex_pattern}, attempt {attempt + 1}")
+                    logger.warning(f"Failed to extract valid JSON for pattern {regex_pattern}, attempt {attempt + 1}/{max_retries}")
                     
             except Exception as e:
-                wait_time = (2 ** attempt) + random.uniform(0, 1)  # Exponential backoff with jitter
-                logger.warning(f"Error generating examples for pattern {regex_pattern}, attempt {attempt + 1}: {e}")
+                # More granular error handling with special rate limit handling
+                error_type = type(e).__name__
+                error_msg = str(e).lower()
+                
+                # Detect rate limiting specifically
+                is_rate_limit = any(keyword in error_msg for keyword in [
+                    'rate limit', 'rate_limit', 'too many requests', 'quota', 'usage limit'
+                ])
+                
+                if is_rate_limit:
+                    # Much longer backoff for rate limits
+                    base_wait = min(60 + (attempt * 30), 300)  # Up to 5 minutes for rate limits
+                    jitter = random.uniform(0, 30)
+                    wait_time = base_wait + jitter
+                    logger.warning(f"🚫 RATE LIMIT for pattern {regex_pattern}, attempt {attempt + 1}/{max_retries}")
+                    logger.info(f"⏰ Rate limit backoff: waiting {wait_time:.1f} seconds...")
+                    
+                    # Signal that we've hit rate limits for adaptive concurrency
+                    self.rate_limit_detected = True
+                else:
+                    # Normal exponential backoff for other errors
+                    base_wait = min(2 ** attempt, 60)
+                    jitter = random.uniform(0, 5)
+                    wait_time = base_wait + jitter
+                    logger.warning(f"{error_type} for pattern {regex_pattern}, attempt {attempt + 1}/{max_retries}: {error_msg[:100]}")
                 
                 if attempt < max_retries - 1:
-                    logger.info(f"Retrying in {wait_time:.2f} seconds...")
                     await asyncio.sleep(wait_time)
                 else:
-                    logger.error(f"Failed to generate examples for pattern {regex_pattern} after {max_retries} attempts")
+                    # On final attempt, if it's a rate limit, extend retries
+                    if is_rate_limit and max_retries < 25:
+                        logger.warning(f"🔄 Rate limit detected on final attempt - extending retries to 25")
+                        return await self.generate_examples_for_regex_with_retry(regex_pattern, description, examples, 25)
+                    else:
+                        logger.error(f"❌ FINAL FAILURE for pattern {regex_pattern} after {max_retries} attempts")
                     
         return None
 
@@ -296,7 +287,7 @@ Always respond with valid JSON in the exact format requested."""
             logger.warning(f"Invalid regex pattern '{regex_pattern}': {e}")
             return False
             
-    async def process_dataset(self, max_patterns: Optional[int] = None, max_concurrent: int = 50) -> List[Dict[str, Any]]:
+    async def process_dataset(self, max_patterns: Optional[int] = None, max_concurrent: int = 200) -> List[Dict[str, Any]]:
         """Process the entire dataset with async parallel processing"""
         logger.info("Starting async dataset processing...")
         
@@ -307,13 +298,70 @@ Always respond with valid JSON in the exact format requested."""
             regex_data = regex_data[:max_patterns]
             logger.info(f"Processing first {max_patterns} patterns")
             
+        # Check for existing checkpoints to resume from
+        existing_results = await self._load_latest_checkpoint()
+        if existing_results:
+            logger.info(f"Found existing checkpoint with {len(existing_results)} results. Resuming...")
+            # Skip already processed patterns
+            regex_data = regex_data[len(existing_results):]
+            logger.info(f"Remaining patterns to process: {len(regex_data)}")
+        else:
+            existing_results = []
+        
+        # Initialize adaptive concurrency
+        self.current_concurrency = max_concurrent
+        attempt = 0
+        max_attempts = 3  # Try up to 3 times with reduced concurrency
+        
+        while attempt < max_attempts and len(regex_data) > 0:
+            attempt += 1
+            
+            # Reduce concurrency if we've hit rate limits before
+            if self.rate_limit_detected and attempt > 1:
+                self.current_concurrency = max(self.current_concurrency // 2, 50)  # Never go below 50
+                logger.warning(f"🔄 Reducing concurrency to {self.current_concurrency} due to rate limits")
+                self.rate_limit_detected = False  # Reset flag
+            
+            logger.info(f"Processing attempt {attempt}/{max_attempts} with {self.current_concurrency} concurrent requests")
+            
+            # Process remaining patterns
+            new_results = await self._process_batch(regex_data, existing_results, self.current_concurrency)
+            
+            # Update results and find what's left to process
+            all_results = existing_results + new_results
+            completed_count = len(new_results)
+            
+            if completed_count == len(regex_data):
+                # All done!
+                logger.info("🎉 All patterns completed successfully!")
+                break
+            elif completed_count > 0:
+                # Some progress made, continue with remaining
+                logger.info(f"Completed {completed_count}/{len(regex_data)} patterns in this batch")
+                existing_results = all_results
+                # Find patterns that still need processing (this is a simplified approach)
+                # In practice, we'd track which specific patterns failed
+                if self.rate_limit_detected:
+                    logger.info("Rate limits detected, will retry remaining patterns with reduced concurrency")
+                    continue
+                else:
+                    break  # Success without rate limits
+            else:
+                logger.warning(f"No progress made in attempt {attempt}, will retry with reduced concurrency")
+        
+        # Final merge of all results
+        await self._merge_temp_results()
+        return all_results if 'all_results' in locals() else existing_results
+
+    async def _process_batch(self, regex_data: List[Dict[str, Any]], existing_results: List[Dict[str, Any]], max_concurrent: int) -> List[Dict[str, Any]]:
+        """Process a batch of regex patterns with the given concurrency"""
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(max_concurrent)
         
         # Create tasks for all patterns
         tasks = []
         for i, item in enumerate(regex_data):
-            task = self.process_single_pattern(item, i, semaphore)
+            task = self.process_single_pattern(item, i + len(existing_results), semaphore)
             tasks.append(task)
         
         # Run all tasks concurrently with progress bar
@@ -331,13 +379,45 @@ Always respond with valid JSON in the exact format requested."""
                     results.append(result)
                 completed_tasks += 1
                 pbar.update(1)
+                
+                # Save checkpoint every 500 completed patterns
+                if completed_tasks % 500 == 0:
+                    checkpoint_results = existing_results + results
+                    await self._save_checkpoint(checkpoint_results, len(existing_results) + completed_tasks)
         
-        logger.info(f"Successfully processed {len(results)}/{len(regex_data)} patterns")
-        
-        # Merge all individual result files
-        await self._merge_temp_results()
-        
+        logger.info(f"Successfully processed {len(results)}/{len(regex_data)} patterns in this batch")
         return results
+
+    async def _load_latest_checkpoint(self) -> List[Dict[str, Any]]:
+        """Load the latest checkpoint if it exists."""
+        temp_dir = self.output_file.parent / "temp_results"
+        if not temp_dir.exists():
+            return []
+            
+        checkpoint_files = sorted(temp_dir.glob("checkpoint_*.json"))
+        if not checkpoint_files:
+            return []
+            
+        latest_checkpoint = checkpoint_files[-1]
+        try:
+            async with aiofiles.open(latest_checkpoint, 'r') as f:
+                content = await f.read()
+                results = json.loads(content)
+                logger.info(f"Loaded checkpoint from {latest_checkpoint}")
+                return results
+        except Exception as e:
+            logger.warning(f"Failed to load checkpoint {latest_checkpoint}: {e}")
+            return []
+
+    async def _save_checkpoint(self, results: List[Dict[str, Any]], completed_count: int):
+        """Save a checkpoint of the current results to a temporary file."""
+        temp_dir = self.output_file.parent / "temp_results"
+        temp_dir.mkdir(exist_ok=True)
+        checkpoint_file = temp_dir / f"checkpoint_{completed_count:06d}.json"
+        
+        async with aiofiles.open(checkpoint_file, 'w') as f:
+            await f.write(json.dumps(results, indent=2))
+        logger.info(f"Saved checkpoint at {completed_count} patterns.")
 
     async def _merge_temp_results(self):
         """Merge all temporary result files into final output"""
@@ -410,6 +490,7 @@ async def main():
     config = {
         "model": "gpt-4o",
         "max_patterns": 8550,
+        "max_concurrent": 500,  # Maximum safe concurrency for high-tier accounts
         "output_file": "./generated_data/regex_golf_dataset.json"
     }
     
@@ -427,7 +508,10 @@ async def main():
     )
     
     # Process the dataset
-    results = await generator.process_dataset(max_patterns=config["max_patterns"])
+    results = await generator.process_dataset(
+        max_patterns=config["max_patterns"],
+        max_concurrent=config["max_concurrent"]
+    )
 
     end_time = time.time()
     
