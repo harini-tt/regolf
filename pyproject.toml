@@ -1,0 +1,17 @@
+[project]
+name = "regolf"
+version = "0.1.0"
+description = "Regolf project"
+authors = [
+    { name = "Michelle Wei" }
+]
+requires-python = ">=3.9"
+
+# Runtime dependencies. You can add packages with `uv add <package>` or manually list them here.
+dependencies = [
+    "modal>=1.1.1",
+]
+
+[build-system]
+requires = ["setuptools>=67.0", "wheel"]
+build-backend = "setuptools.build_meta"
