@@ -74,12 +74,21 @@ class RegexGolfDataGenerator:
         logger.info(f"Loaded {len(regex_data)} regex patterns")
         return regex_data
         
-    async def generate_examples_for_regex_with_retry(self, regex_pattern: str, description: str, examples: List[str] = None, max_retries: int = 15) -> Optional[Dict[str, Any]]:
-        """Generate training examples with retry logic and exponential backoff - NEVER GIVES UP on rate limits"""
+    async def generate_examples_for_regex_with_retry(self, regex_pattern: str, description: str, examples: List[str] = None, max_retries: int = 6) -> Optional[Dict[str, Any]]:
+        """Generate training examples with fast retry logic - 1 minute max total time"""
+        start_time = time.time()
+        max_total_time = 60  # 1 minute max total time per pattern
+        
         for attempt in range(max_retries):
+            # Check if we've exceeded total time limit
+            elapsed = time.time() - start_time
+            if elapsed > max_total_time:
+                logger.warning(f"⏱️ Time limit exceeded for pattern {regex_pattern} after {elapsed:.1f}s")
+                break
+                
             try:
-                # Add some jitter to avoid thundering herd
-                initial_delay = random.uniform(0, 1.0)
+                # Minimal jitter to avoid thundering herd
+                initial_delay = random.uniform(0, 0.2)
                 await asyncio.sleep(initial_delay)
                 
                 prompt = self._create_prompt(regex_pattern, description, examples)
@@ -98,7 +107,7 @@ class RegexGolfDataGenerator:
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
-                    timeout=120.0,  # Longer timeout for rate-limited scenarios
+                    timeout=30.0,  # Short timeout
                     **token_param
                 )
                 
@@ -106,13 +115,12 @@ class RegexGolfDataGenerator:
                 result = self._extract_json_from_response(content, regex_pattern)
                 
                 if result:
-                    logger.debug(f"✅ Success for pattern {regex_pattern} on attempt {attempt + 1}")
+                    logger.debug(f"✅ Success for pattern {regex_pattern} on attempt {attempt + 1} ({elapsed:.1f}s)")
                     return result
                 else:
-                    logger.warning(f"Failed to extract valid JSON for pattern {regex_pattern}, attempt {attempt + 1}/{max_retries}")
+                    logger.warning(f"Invalid JSON for pattern {regex_pattern}, attempt {attempt + 1}/{max_retries}")
                     
             except Exception as e:
-                # More granular error handling with special rate limit handling
                 error_type = type(e).__name__
                 error_msg = str(e).lower()
                 
@@ -122,40 +130,49 @@ class RegexGolfDataGenerator:
                 ])
                 
                 if is_rate_limit:
-                    # Much longer backoff for rate limits
-                    base_wait = min(60 + (attempt * 30), 300)  # Up to 5 minutes for rate limits
-                    jitter = random.uniform(0, 30)
-                    wait_time = base_wait + jitter
-                    logger.warning(f"🚫 RATE LIMIT for pattern {regex_pattern}, attempt {attempt + 1}/{max_retries}")
-                    logger.info(f"⏰ Rate limit backoff: waiting {wait_time:.1f} seconds...")
-                    
-                    # Signal that we've hit rate limits for adaptive concurrency
+                    # Short backoff for rate limits - max 10 seconds
+                    wait_time = min(3 + (attempt * 2), 10)
+                    logger.warning(f"🚫 Rate limit for {regex_pattern}, attempt {attempt + 1}, waiting {wait_time}s")
                     self.rate_limit_detected = True
                 else:
-                    # Normal exponential backoff for other errors
-                    base_wait = min(2 ** attempt, 60)
-                    jitter = random.uniform(0, 5)
-                    wait_time = base_wait + jitter
-                    logger.warning(f"{error_type} for pattern {regex_pattern}, attempt {attempt + 1}/{max_retries}: {error_msg[:100]}")
+                    # Very short backoff for other errors - max 5 seconds
+                    wait_time = min(1 + attempt, 5)
+                    logger.warning(f"{error_type} for {regex_pattern}, attempt {attempt + 1}, waiting {wait_time}s")
                 
+                # Check if waiting would exceed time limit
+                elapsed = time.time() - start_time
+                if elapsed + wait_time > max_total_time:
+                    logger.warning(f"⏱️ Skipping wait to avoid time limit for {regex_pattern}")
+                    break
+                    
                 if attempt < max_retries - 1:
                     await asyncio.sleep(wait_time)
-                else:
-                    # On final attempt, if it's a rate limit, extend retries
-                    if is_rate_limit and max_retries < 25:
-                        logger.warning(f"🔄 Rate limit detected on final attempt - extending retries to 25")
-                        return await self.generate_examples_for_regex_with_retry(regex_pattern, description, examples, 25)
-                    else:
-                        logger.error(f"❌ FINAL FAILURE for pattern {regex_pattern} after {max_retries} attempts")
                     
+        logger.error(f"❌ Failed {regex_pattern} after {time.time() - start_time:.1f}s")
         return None
 
-    async def process_single_pattern(self, item: Dict[str, Any], index: int, semaphore: asyncio.Semaphore) -> Optional[Dict[str, Any]]:
-        """Process a single regex pattern with concurrency control"""
+    async def process_single_pattern(self, item: Dict[str, Any], index: int, semaphore: asyncio.Semaphore) -> tuple[Optional[Dict[str, Any]], bool]:
+        """Process a single regex pattern with concurrency control. Returns (result, was_skipped)"""
         async with semaphore:
             regex = item["regex"]
             description = item["description"]
             examples = item.get("examples", [])
+            
+            # Check if result file already exists
+            temp_dir = self.output_file.parent / "temp_results"
+            temp_file = temp_dir / f"result_{index:06d}.json"
+            
+            if temp_file.exists():
+                try:
+                    # Load existing result
+                    async with aiofiles.open(temp_file, 'r') as f:
+                        content = await f.read()
+                        existing_result = json.loads(content)
+                    logger.debug(f"✅ Skipping pattern {index} (already exists): {regex}")
+                    return existing_result, True  # True indicates skipped
+                except Exception as e:
+                    logger.warning(f"Failed to load existing file {temp_file}, will regenerate: {e}")
+                    # Continue to generate new result if file is corrupted
             
             logger.info(f"Processing {index}: {regex}")
             
@@ -165,10 +182,10 @@ class RegexGolfDataGenerator:
                 logger.info(f"✅ Generated examples for: {regex}")
                 # Save individual result to avoid corruption
                 await self._save_individual_result(result, index)
-                return result
+                return result, False  # False indicates newly generated
             else:
                 logger.warning(f"❌ Failed to generate examples for: {regex}")
-                return None
+                return None, False
 
     async def _save_individual_result(self, result: Dict[str, Any], index: int):
         """Save individual result to a temporary file"""
@@ -353,8 +370,28 @@ Always respond with valid JSON in the exact format requested."""
         await self._merge_temp_results()
         return all_results if 'all_results' in locals() else existing_results
 
+    async def _scan_existing_results(self, total_patterns: int) -> int:
+        """Scan for existing result files and return count"""
+        temp_dir = self.output_file.parent / "temp_results"
+        if not temp_dir.exists():
+            return 0
+            
+        existing_files = list(temp_dir.glob("result_*.json"))
+        existing_count = len(existing_files)
+        
+        if existing_count > 0:
+            logger.info(f"📁 Found {existing_count} existing result files")
+            logger.info(f"📊 Progress: {existing_count}/{total_patterns} ({existing_count/total_patterns*100:.1f}%) already completed")
+        
+        return existing_count
+
     async def _process_batch(self, regex_data: List[Dict[str, Any]], existing_results: List[Dict[str, Any]], max_concurrent: int) -> List[Dict[str, Any]]:
         """Process a batch of regex patterns with the given concurrency"""
+        
+        # Scan for existing result files
+        total_patterns = len(regex_data) + len(existing_results)
+        existing_file_count = await self._scan_existing_results(total_patterns)
+        
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(max_concurrent)
         
@@ -367,6 +404,7 @@ Always respond with valid JSON in the exact format requested."""
         # Run all tasks concurrently with progress bar
         logger.info(f"Starting {len(tasks)} concurrent tasks...")
         results = []
+        skipped_count = 0
         
         # Use asyncio.as_completed with tqdm for progress tracking
         completed_tasks = 0
@@ -374,9 +412,12 @@ Always respond with valid JSON in the exact format requested."""
         
         with tqdm(total=total_tasks, desc="Processing patterns") as pbar:
             for coro in asyncio.as_completed(tasks):
-                result = await coro
+                result, was_skipped = await coro
                 if result is not None:
                     results.append(result)
+                    # Check if this was a skipped file vs newly generated
+                    if was_skipped:
+                        skipped_count += 1
                 completed_tasks += 1
                 pbar.update(1)
                 
@@ -386,6 +427,9 @@ Always respond with valid JSON in the exact format requested."""
                     await self._save_checkpoint(checkpoint_results, len(existing_results) + completed_tasks)
         
         logger.info(f"Successfully processed {len(results)}/{len(regex_data)} patterns in this batch")
+        if skipped_count > 0:
+            logger.info(f"📁 Skipped {skipped_count} patterns (files already existed)")
+        
         return results
 
     async def _load_latest_checkpoint(self) -> List[Dict[str, Any]]:
