@@ -10,8 +10,16 @@ requires-python = ">=3.9"
 # Runtime dependencies. You can add packages with `uv add <package>` or manually list them here.
 dependencies = [
     "modal>=1.1.1",
+    "torch",
+    "transformers",
+    "wandb",
+    "numpy",
+    "datasets",
 ]
 
 [build-system]
 requires = ["setuptools>=67.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["regex"]
