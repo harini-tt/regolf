@@ -55,9 +55,16 @@ class RegexGolfDataGenerator:
         regex_data = []
         for item in dataset:
             if "regex" in item and item["regex"]:
+                # Extract examples from the text column
+                text_examples = []
+                if "text" in item and item["text"]:
+                    # Split text by newlines and filter out empty strings
+                    text_examples = [line.strip() for line in item["text"].split('\n') if line.strip()]
+                
                 regex_data.append({
                     "regex": item["regex"],
-                    "description": item.get("description", "No description provided")
+                    "description": item.get("description", "No description provided"),
+                    "examples": text_examples
                 })
                 
         logger.info(f"Loaded {len(regex_data)} regex patterns")
@@ -70,11 +77,11 @@ class RegexGolfDataGenerator:
             time.sleep(self.min_request_interval - elapsed)
         self.last_request_time = time.time()
         
-    def generate_examples_for_regex(self, regex_pattern: str, description: str) -> Optional[Dict[str, Any]]:
+    def generate_examples_for_regex(self, regex_pattern: str, description: str, examples: List[str] = None) -> Optional[Dict[str, Any]]:
         """Generate training examples for a single regex pattern"""
         self._rate_limit()
         
-        prompt = self._create_prompt(regex_pattern, description)
+        prompt = self._create_prompt(regex_pattern, description, examples)
         
         try:
             # GPT-5 (o1) models use max_completion_tokens, others use max_tokens
@@ -120,32 +127,31 @@ Focus on:
 
 Always respond with valid JSON in the exact format requested."""
 
-    def _create_prompt(self, regex_pattern: str, description: str) -> str:
+    def _create_prompt(self, regex_pattern: str, description: str, examples: List[str] = None) -> str:
         """Create a prompt for generating examples for a specific regex"""
         
-        prompt = f"""
-Given this regex pattern: `{regex_pattern}`
-Description: {description}
-
-Generate training examples for regex golf. Create 6-10 strings that SHOULD match this pattern 
-and 6-10 strings that should NOT match this pattern.
-
-Make the examples:
-- Realistic and diverse
-- Include edge cases
-- Cover different scenarios the regex might encounter
-- Be educational for learning regex patterns
-
-Return ONLY a valid JSON object in this exact format:
-{{
-  "expr": "{regex_pattern}",
-  "yes": ["string1", "string2", "string3", ...],
-  "no": ["string1", "string2", "string3", ...]
-}}
-
-Make sure the JSON is valid and parseable. Do not include any other text or explanation.
-"""
-        return prompt
+        # Load prompt template from file
+        prompt_file = Path(__file__).parent / "prompt.txt"
+        
+        try:
+            with open(prompt_file, 'r') as f:
+                prompt_template = f.read()
+            
+            # Replace the placeholder with the actual regex pattern
+            prompt = prompt_template.format(regex_pattern=regex_pattern)
+            
+            # Add examples from the dataset if available
+            if examples and len(examples) > 0:
+                examples_text = "\n\nThe following are known examples that should match this regex:\n"
+                for i, example in enumerate(examples[:10], 1):  # Limit to first 10 examples
+                    examples_text += f"{i}. `{example}`\n"
+                examples_text += "\nPlease use these as reference and include some of them in your 'yes' examples, but also generate additional diverse examples to ensure comprehensive coverage."
+                prompt += examples_text
+            
+            return prompt
+            
+        except FileNotFoundError:
+            return "fnfe"
         
     def _extract_json_from_response(self, content: str, regex_pattern: str) -> Optional[Dict[str, Any]]:
         """Extract and validate JSON from GPT response"""
@@ -227,11 +233,12 @@ Make sure the JSON is valid and parseable. Do not include any other text or expl
         for i, item in enumerate(tqdm(regex_data, desc="Processing patterns")):
             regex = item["regex"]
             description = item["description"]
+            examples = item.get("examples", [])
             
             logger.info(f"Processing {i+1}/{len(regex_data)}: {regex}")
             
             # Generate examples for this specific regex
-            result = self.generate_examples_for_regex(regex, description)
+            result = self.generate_examples_for_regex(regex, description, examples)
             
             if result:
                 results.append(result)
@@ -274,8 +281,8 @@ def main():
     """Main function to run the data generation"""
     # Configuration
     config = {
-        "model": "gpt-5-mini",  # or "gpt-3.5-turbo" for faster/cheaper
-        "max_patterns": 5,             # Max patterns to process (None for all 8.55k)
+        "model": "gpt-4o",
+        "max_patterns": 5,
         "output_file": "./generated_data/regex_golf_dataset.json"
     }
     
