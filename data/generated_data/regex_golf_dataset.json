@@ -1,0 +1,30 @@
+[
+  {
+    "expr": "(.*\\d{5,}.*)|(^(\\,|\\.|\\\\|\\'|\\-|\\?|\\*|\\(|\\@|\\^|\\=|\\/|\\%|\\\").*)|(.*(\\<|\\>|\\[|\\]|\\;).*)|(.*(\\.html|\\.php).*)|^(\\d\\.\\d)|(^\\\\.*)|(^\\%.*\\%)|(\\d{1,3}(((x|\\.|\\.[[:space:]]){1,2})|[[:space:]])\\d{1,3})|.*x$|^0[a-z]*|.{50,}",
+    "yes": [
+      "There are 123456 apples",
+      ",starting with a comma",
+      "This <tag> should match",
+      "Visit us at example.html",
+      "Version 2.0 is out",
+      "\\escaped",
+      "%special%",
+      "10 x 20",
+      "Ends with an x",
+      "000alpha",
+      "This is a very long string that definitely has more than fifty characters in it."
+    ],
+    "no": [
+      "1234",
+      "Hello, world!",
+      "Just a regular sentence.",
+      "File name: document.txt",
+      "3.14159",
+      "simple_text",
+      "20 30",
+      "Short one",
+      "0",
+      "This is exactly forty-nine characters long! Wow!"
+    ]
+  }
+]
