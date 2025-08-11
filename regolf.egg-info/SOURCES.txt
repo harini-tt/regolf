@@ -1,6 +1,6 @@
 README.md
 pyproject.toml
-data/data_gen.py
+data/validate_data.py
 regex/__init__.py
 regex/model_output_parser.py
 regex/regex_ast_validation.py
