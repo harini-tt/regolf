@@ -6,28 +6,98 @@ import json
 import re
 import os
 import glob
-from typing import Dict, List, Any, Tuple
-from dataclasses import dataclass
+import warnings
+import signal
+import time
+from contextlib import contextmanager
+
+# Suppress regex compilation warnings for speed
+warnings.filterwarnings('ignore', category=FutureWarning)
+from typing import Dict, List, Any, Tuple, Optional
 from pathlib import Path
 from tqdm import tqdm
-import time
 
 from data_validator import ValidationStats, DataValidator
 
 
+class TimeoutException(Exception):
+    pass
+
+
+@contextmanager
+def timeout(seconds):
+    """Context manager for timing out operations."""
+    def signal_handler(signum, frame):
+        raise TimeoutException()
+    
+    # Set up signal handler
+    old_handler = signal.signal(signal.SIGALRM, signal_handler)
+    signal.alarm(int(seconds))  # Convert to int for signal.alarm
+    
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+
 class EntryProgressValidator(DataValidator):
-    """Validator with entry-level progress tracking."""
+    """Validator with entry-level progress tracking and timeouts."""
     
     def __init__(self, input_dir: str = "../generated_data", 
-                 output_dir: str = "../validated_data"):
+                 output_dir: str = "../validated_data",
+                 entry_timeout: int = 2):
         """
         Initialize validator with entry-level progress.
         
         Args:
             input_dir: Directory containing JSON files to validate
             output_dir: Directory to save validated files
+            entry_timeout: Maximum seconds per entry before timeout
         """
         super().__init__(input_dir, output_dir)
+        self.entry_timeout = entry_timeout
+        self.timed_out_entries = []
+    
+    def validate_entry_with_timeout(self, entry: Dict[str, Any]) -> Tuple[Dict[str, Any], ValidationStats]:
+        """
+        Validate a single entry with timeout protection.
+        
+        Args:
+            entry: Dictionary with 'expr', 'yes', and 'no' fields
+            
+        Returns:
+            Tuple of (validated_entry, stats)
+        """
+        try:
+            with timeout(self.entry_timeout):
+                return self.validate_entry(entry)
+        except TimeoutException:
+            # Entry timed out - return empty results
+            regex_str = entry.get('expr', '')[:50] + '...'
+            self.timed_out_entries.append(regex_str)
+            
+            # Return empty validated entry
+            validated_entry = {
+                'expr': entry.get('expr', ''),
+                'yes': [],
+                'no': [],
+                '_validation_error': f'Timeout after {self.entry_timeout}s'
+            }
+            
+            # Create stats showing all strings removed
+            yes_count = len(entry.get('yes', []))
+            no_count = len(entry.get('no', []))
+            stats = ValidationStats(
+                original_yes_count=yes_count,
+                original_no_count=no_count,
+                filtered_yes_count=0,
+                filtered_no_count=0,
+                removed_yes_count=yes_count,
+                removed_no_count=no_count
+            )
+            
+            return validated_entry, stats
     
     def count_total_entries(self, json_files: List[str]) -> Tuple[int, Dict[str, int]]:
         """
@@ -136,8 +206,8 @@ class EntryProgressValidator(DataValidator):
                         pbar.update(1)
                         continue
                     
-                    # Validate entry
-                    validated_entry, stats = self.validate_entry(entry)
+                    # Validate entry with timeout
+                    validated_entry, stats = self.validate_entry_with_timeout(entry)
                     validated_entries.append(validated_entry)
                     stats_list.append(stats)
                     
@@ -150,11 +220,11 @@ class EntryProgressValidator(DataValidator):
                             'removed_no': stats.removed_no_count
                         })
                     
-                    # Update progress
+                    # Update progress bar immediately after each entry
                     pbar.update(1)
                     
-                    # Update description periodically with stats
-                    if (i + 1) % 100 == 0 or (i + 1) == len(data):
+                    # Update description more frequently (every 10 entries for responsiveness)
+                    if (i + 1) % 10 == 0 or (i + 1) == len(data):
                         # Calculate running accuracy for this file
                         total_yes = sum(s.original_yes_count for s in stats_list)
                         total_no = sum(s.original_no_count for s in stats_list)
@@ -167,6 +237,9 @@ class EntryProgressValidator(DataValidator):
                             pbar.set_postfix_str(
                                 f"{filename[:25]}... [{i+1}/{len(data)}] YES:{yes_acc:.0f}% NO:{no_acc:.0f}%"
                             )
+                        
+                        # Force refresh to ensure display updates
+                        pbar.refresh()
                 
                 # Save validated data
                 if validated_entries:
@@ -226,6 +299,15 @@ class EntryProgressValidator(DataValidator):
         print(f"  Total strings validated: {total_original:,}")
         print(f"  Strings kept: {total_kept:,} ({(total_kept/total_original)*100:.1f}%)")
         print(f"  Strings removed: {total_removed:,} ({(total_removed/total_original)*100:.1f}%)")
+        
+        # Report timeouts if any
+        if self.timed_out_entries:
+            print(f"\n⚠️  Timed out entries: {len(self.timed_out_entries)}")
+            print(f"  (Timeout set to {self.entry_timeout}s per entry)")
+            for regex in self.timed_out_entries[:5]:
+                print(f"    • {regex}")
+            if len(self.timed_out_entries) > 5:
+                print(f"    ... and {len(self.timed_out_entries) - 5} more")
         
         # Per-file details
         print(f"\n📁 File Details:")
