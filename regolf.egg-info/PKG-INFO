@@ -1,12 +1,16 @@
 Metadata-Version: 2.4
 Name: regolf
 Version: 0.1.0
-Summary: Regolf project
+Summary: Regex Golf training with GRPO on OpenAI OSS models
 Author: Michelle Wei
-Requires-Python: >=3.9
+Requires-Python: >=3.11
 Requires-Dist: modal>=1.1.1
-Requires-Dist: torch
-Requires-Dist: transformers
-Requires-Dist: wandb
-Requires-Dist: numpy
-Requires-Dist: datasets
+Requires-Dist: torch>=2.0.0
+Requires-Dist: transformers>=4.35.0
+Requires-Dist: accelerate>=0.24.0
+Requires-Dist: datasets>=2.14.0
+Requires-Dist: wandb>=0.16.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: tqdm>=4.66.0
+Requires-Dist: jsonschema>=4.19.0
+Requires-Dist: pydantic>=2.5.0
