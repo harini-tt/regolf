@@ -14,7 +14,12 @@ image = modal.Image.debian_slim(python_version="3.11").uv_pip_install(
 
 app = modal.App("gpt-training", image=image)
 
-@app.function(gpu="H200:8", timeout=3600, secrets=[modal.Secret.from_name("wandb-secret")])
+@app.function(
+    gpu="H100:16", 
+    timeout=3600, 
+    secrets=[modal.Secret.from_name("wandb-secret")],
+    mounts=[modal.Mount.from_local_dir("/Users/michelle.wei_x/Documents/regolf", remote_path="/regolf")]
+)
 def train_gpt_grpo():
     # Import all dependencies inside the function to avoid conflicts
     import torch
@@ -32,15 +37,59 @@ def train_gpt_grpo():
     from typing import List, Dict, Any, Optional, Tuple
     import time
     
-    # Add regolf to path for imports
-    sys.path.append("/regolf")
+    # Import modules using direct file loading to avoid import path issues
+    import importlib.util
     
-    # Import evaluation pipeline from mounted directory
-    from regex.regex_evaluator import RegexEvaluator, create_evaluator
-    from regex.reward_calculator import compute_grpo_rewards
-    from prompts.agent_prompts.system_message import SYSTEM_MESSAGE
-    from prompts.agent_prompts.user_message import USER_MESSAGE
-    from prompts.agent_prompts.developer_message import DEVELOPER_MESSAGE
+    def load_module_from_path(module_name: str, file_path: str):
+        """Load a module directly from file path"""
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        
+        # Handle dependencies for regex modules
+        if 'regex' in file_path:
+            # Add the regex directory to sys.path temporarily for internal imports
+            regex_dir = "/regolf/regex"
+            if regex_dir not in sys.path:
+                sys.path.insert(0, regex_dir)
+            
+            # Also add regolf root for relative imports
+            if "/regolf" not in sys.path:
+                sys.path.insert(0, "/regolf")
+        
+        spec.loader.exec_module(module)
+        return module
+    
+    # Debug: Check if mount is working
+    print("Checking mounted files...")
+    print(f"Contents of /regolf: {os.listdir('/regolf') if os.path.exists('/regolf') else 'Directory not found'}")
+    if os.path.exists("/regolf/regex"):
+        print(f"Contents of /regolf/regex: {os.listdir('/regolf/regex')}")
+    if os.path.exists("/regolf/prompts/agent_prompts"):
+        print(f"Contents of /regolf/prompts/agent_prompts: {os.listdir('/regolf/prompts/agent_prompts')}")
+    
+    # Load all required modules
+    print("Loading regolf modules...")
+    
+    # Load reward_calculator first (it's a dependency)
+    reward_calculator = load_module_from_path("reward_calculator", "/regolf/regex/reward_calculator.py")
+    
+    # Load regex_evaluator (depends on reward_calculator)
+    regex_evaluator = load_module_from_path("regex_evaluator", "/regolf/regex/regex_evaluator.py")
+    
+    # Load prompt modules
+    system_message = load_module_from_path("system_message", "/regolf/prompts/agent_prompts/system_message.py")
+    user_message = load_module_from_path("user_message", "/regolf/prompts/agent_prompts/user_message.py")
+    developer_message = load_module_from_path("developer_message", "/regolf/prompts/agent_prompts/developer_message.py")
+    
+    # Extract the classes and functions we need
+    RegexEvaluator = regex_evaluator.RegexEvaluator
+    create_evaluator = regex_evaluator.create_evaluator
+    compute_grpo_rewards = reward_calculator.compute_grpo_rewards
+    SYSTEM_MESSAGE = system_message.SYSTEM_MESSAGE
+    USER_MESSAGE = user_message.USER_MESSAGE
+    DEVELOPER_MESSAGE = developer_message.DEVELOPER_MESSAGE
+    
+    print("Successfully loaded all regolf modules")
     
     # Initialize wandb
     wandb_api_key = os.getenv("WANDB_API_KEY")
