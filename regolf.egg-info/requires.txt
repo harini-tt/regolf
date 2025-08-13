@@ -1,2 +1,11 @@
 aiofiles>=24.1.0
 modal>=1.1.1
+torch>=2.0.0
+transformers>=4.35.0
+accelerate>=0.24.0
+datasets>=2.14.0
+wandb>=0.16.0
+numpy>=1.24.0
+tqdm>=4.66.0
+jsonschema>=4.19.0
+pydantic>=2.5.0
