@@ -1,5 +1,11 @@
 README.md
 pyproject.toml
+data/validate_data.py
+regex/__init__.py
+regex/model_output_parser.py
+regex/regex_ast_validation.py
+regex/regex_evaluator.py
+regex/reward_calculator.py
 data/data_gen_hf.py
 data/data_gen_hf_parallel.py
 data/data_gen_puzzles.py
